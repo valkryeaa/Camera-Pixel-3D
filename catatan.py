@@ -1,3 +1,4 @@
+# SELEBIHNYA KALAU ERROR AI AJA, INI CODE DIPAKAI DI MACBOOK
 # ==============================================================================
 # 🌌 TECHNICAL NOTES & DOCUMENTATION: NEBULAHEART 3D (SPACE GESTURE CONTROLLER)
 # ==============================================================================
