@@ -99,50 +99,71 @@ def hitung_mode_gestur(hand_landmarks):
 # ==========================================
 def camera_thread_func():
     cap = cv2.VideoCapture(0, cv2.CAP_AVFOUNDATION)
-    print("Camera opened:", cap.isOpened())
     # Trik khusus macOS: pancing kamera agar memberikan prompt izin akses
     cv2.waitKey(500)
-    
+
+    if not cap.isOpened():
+        print("ERROR: Kamera tidak bisa dibuka. Cek izin kamera di System Settings > Privacy & Security > Camera,")
+        print("lalu pastikan tidak ada aplikasi lain (Zoom/FaceTime/dll) yang sedang memakai kamera.")
+        shared_data["running"] = False
+        return
+
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)   
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
     
     mp_hands = mp.solutions.hands
     hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
+    fail_count = 0
+    got_first_frame = False
+
     while shared_data["running"]:
-        ret, frame = cap.read()
-        print("KAMERA HIDUP")
-        if not ret:
-            time.sleep(0.01)
-            continue
+        try:
+            ret, frame = cap.read()
+            if not ret:
+                fail_count += 1
+                if fail_count % 60 == 0:
+                    print(f"PERINGATAN: kamera terbuka tapi belum dapat frame sama sekali ({fail_count}x gagal). "
+                          f"Cek izin kamera atau apakah kamera dipakai aplikasi lain.")
+                time.sleep(0.01)
+                continue
 
-        frame = cv2.flip(frame, 1)  
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = hands.process(rgb_frame)
+            if not got_first_frame:
+                print("Frame pertama berhasil didapat dari kamera.")
+                got_first_frame = True
+            fail_count = 0
 
-        local_mode = 1
-        local_x, local_y, local_z = 0.0, 0.0, -12.0
+            frame = cv2.flip(frame, 1)  
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = hands.process(rgb_frame)
 
-        if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                mp.solutions.drawing_utils.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-                local_mode = hitung_mode_gestur(hand_landmarks)
-                
-                wrist = hand_landmarks.landmark[0]
-                local_x = (wrist.x - 0.5) * 10.0 
-                local_y = -(wrist.y - 0.5) * 7.0 
-                
-                pinky_mcp = hand_landmarks.landmark[17]
-                distance = math.sqrt((wrist.x - pinky_mcp.x)**2 + (wrist.y - pinky_mcp.y)**2)
-                local_z = -10.0 - (1.0 / (distance + 0.01)) * 0.2
+            local_mode = 1
+            local_x, local_y, local_z = 0.0, 0.0, -12.0
 
-        with lock:
-            shared_data["mode"] = local_mode
-            print("MODE =", local_mode)
-            shared_data["target_x"] = local_x
-            shared_data["target_y"] = local_y
-            shared_data["target_z"] = local_z
-            shared_data["frame"] = frame
+            if results.multi_hand_landmarks:
+                for hand_landmarks in results.multi_hand_landmarks:
+                    mp.solutions.drawing_utils.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+                    local_mode = hitung_mode_gestur(hand_landmarks)
+                    
+                    wrist = hand_landmarks.landmark[0]
+                    local_x = (wrist.x - 0.5) * 10.0 
+                    local_y = -(wrist.y - 0.5) * 7.0 
+                    
+                    pinky_mcp = hand_landmarks.landmark[17]
+                    distance = math.sqrt((wrist.x - pinky_mcp.x)**2 + (wrist.y - pinky_mcp.y)**2)
+                    local_z = -10.0 - (1.0 / (distance + 0.01)) * 0.2
+
+            with lock:
+                shared_data["mode"] = local_mode
+                shared_data["target_x"] = local_x
+                shared_data["target_y"] = local_y
+                shared_data["target_z"] = local_z
+                shared_data["frame"] = frame
+        except Exception as e:
+            import traceback
+            print("ERROR di dalam camera thread:")
+            traceback.print_exc()
+            time.sleep(0.5)
 
     cap.release()
 
@@ -157,6 +178,7 @@ time.sleep(1.0)
 # MAIN THREAD: RENDERING GRAFIS 3D (Pygame diinisialisasi di sini)
 # ==========================================
 pygame.init()
+pygame.display.gl_set_attribute(pygame.GL_CONTEXT_PROFILE_MASK, pygame.GL_CONTEXT_PROFILE_COMPATIBILITY)
 pygame.display.set_mode(
     (WIDTH, HEIGHT),
     DOUBLEBUF | OPENGL | RESIZABLE
@@ -178,6 +200,13 @@ while shared_data["running"]:
     for event in pygame.event.get():
         if event.type == pygame.QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
             shared_data["running"] = False
+        elif event.type == VIDEORESIZE:
+            WIDTH, HEIGHT = event.w, event.h
+            glViewport(0, 0, WIDTH, HEIGHT)
+            glMatrixMode(GL_PROJECTION)
+            glLoadIdentity()
+            gluPerspective(45, (WIDTH / HEIGHT), 0.1, 50.0)
+            glMatrixMode(GL_MODELVIEW)
 
     with lock:
         current_mode = shared_data["mode"]
@@ -193,8 +222,7 @@ while shared_data["running"]:
             3: "TEKS I LOVE YOU (Peace)", 
             4: "BENTUK HATI / LOVE (Kepal)"
         }
-        cv2.putText(frame, f"MODE: {mode_labels[current_mode]}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        print("FRAME OK")
+        cv2.putText(frame, f"MODE: {mode_labels.get(current_mode, 'UNKNOWN')}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
         cv2.imshow("Hand Sensor Monitor", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             shared_data["running"] = False
